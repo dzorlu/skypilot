@@ -21,13 +21,13 @@ Slime requires converting HuggingFace model weights to Megatron's `torch_dist` f
 cd /root/slime
 
 # Load model configuration
-source scripts/models/qwen3-4B.sh
+source scripts/models/glm4-9B.sh
 
 # Convert weights (replace paths as needed)
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
-    --hf-checkpoint /root/Qwen3-4B \
-    --save /root/Qwen3-4B_torch_dist
+    --hf-checkpoint /root/glm-4-9b-chat \
+    --save /root/glm-4-9b-chat_torch_dist
 ```
 
 **Important**: Upload the converted `torch_dist` weights to cloud storage (S3, GCS, etc.) before launching training. The YAML expects these weights to be accessible.
@@ -55,12 +55,12 @@ Before launching, you need to set the following environment variables or update 
 
 ```bash
 export CHECKPOINT_BUCKET_NAME=your-bucket-name
-export TORCH_DIST_WEIGHTS_PATH=s3://your-bucket/qwen3-4b-torch-dist  # Path to converted weights
+export TORCH_DIST_WEIGHTS_PATH=s3://your-bucket/glm-4-9b-chat-torch-dist  # Path to converted weights
 export DATASET_PATH=s3://your-bucket/dapo-math-17k  # Training dataset
 export EVAL_DATASET_PATH=s3://your-bucket/aime-2024  # Evaluation dataset
 ```
 
-Launch a single-node RLHF training job on 4 GPUs:
+Launch a single-node RLHF training job on 8 GPUs:
 ```bash
 sky launch -c slime llm/slime/slime.yaml
 ```
@@ -82,8 +82,8 @@ sky status --endpoint 8265 slime
 
 ## Key Features
 
-The example trains Qwen3-4B on the dapo-math-17k dataset using GRPO:
-- **Single-node training** with 4 GPUs (colocated mode)
+The example trains GLM-4-9B on the dapo-math-17k dataset using GRPO:
+- **Single-node training** with 8 GPUs (4 for training, 4 for rollout)
 - **Docker-based setup** with all dependencies pre-configured
 - **Checkpoint persistence** to cloud storage for resumption
 - **Customizable models and datasets** via environment variables
@@ -143,7 +143,7 @@ ssh -L 8265:localhost:8265 slime
 1. **Docker container**: Runs `slimerl/slime:latest` with all dependencies pre-installed
 2. **Ray cluster**: Single-node Ray head for job orchestration
 3. **Training job**: Submitted to Ray with Megatron (training) + SGLang (inference/rollout)
-4. **Colocated mode**: Training and inference run on the same GPUs for efficiency
+4. **Separate GPUs**: 4 GPUs for actor (training) and 4 GPUs for rollout (inference) for better performance
 
 ## Troubleshooting
 
