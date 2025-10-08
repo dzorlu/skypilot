@@ -1,196 +1,74 @@
-name: slime-training
+# Slime ReTool: RL Training for Tool-Using LLMs
+#
+# This example trains Qwen3-4B with the ReTool framework for tool-augmented generation.
+# The model learns to use Python code execution tools to solve math problems.
+#
+# Usage:
+#   sky launch -c slime-retool llm/slime/slime.yaml --env WANDB_KEY=<your-key>
+
+name: slime-retool
 
 resources:
-  accelerators:
-    - A100:8
-    - A100-80GB:8
-    - H100:8
-  use_spot: false
+  accelerators: {A100-80GB:8,  H100:8}
+  disk_size: 512
+  use_spot: true
   ports:
-    - 8265
+    - 8265  # Ray dashboard
 
 envs:
   HF_HUB_ENABLE_HF_TRANSFER: "1"
-  CHECKPOINT_BUCKET_NAME: ${CHECKPOINT_BUCKET_NAME}
-  MODEL_NAME: THUDM/glm-4-9b-chat  # HuggingFace model for tokenizer/config
-  TORCH_DIST_WEIGHTS_PATH: ${TORCH_DIST_WEIGHTS_PATH}  # Path to converted weights
-  DATASET_PATH: ${DATASET_PATH}  # Training dataset path
-  EVAL_DATASET_PATH: ${EVAL_DATASET_PATH}  # Evaluation dataset path
-  LEARNING_RATE: 1e-6
-  GLOBAL_BATCH_SIZE: 256
-  WANDB_API_KEY: ${WANDB_API_KEY}
-
-file_mounts:
-  /checkpoints:
-    name: ${CHECKPOINT_BUCKET_NAME}
-    mode: MOUNT
-  /torch_dist_weights:
-    source: ${TORCH_DIST_WEIGHTS_PATH}
-    mode: MOUNT
-  /datasets:
-    source: ${DATASET_PATH}
-    mode: MOUNT
-  /eval_datasets:
-    source: ${EVAL_DATASET_PATH}
-    mode: MOUNT
+  WANDB_KEY: null  # Optional: Pass with --env WANDB_KEY=<key>
 
 setup: |
+  # Use official Slime Docker image with all dependencies
   docker pull slimerl/slime:latest
 
 run: |
   docker run --rm --gpus all --ipc=host --shm-size=16g \
     --ulimit memlock=-1 --ulimit stack=67108864 \
     -v ~/sky_workdir:/workspace \
-    -v /checkpoints:/checkpoints \
-    -v /torch_dist_weights:/torch_dist_weights \
-    -v /datasets:/datasets \
-    -v /eval_datasets:/eval_datasets \
-    -e WANDB_API_KEY=${WANDB_API_KEY} \
-    -e MODEL_NAME=${MODEL_NAME} \
-    -e LEARNING_RATE=${LEARNING_RATE} \
-    -e GLOBAL_BATCH_SIZE=${GLOBAL_BATCH_SIZE} \
+    -e WANDB_KEY=${WANDB_KEY} \
+    -p 8265:8265 \
     slimerl/slime:latest bash -c '
   
   set -ex
   
+  # Clone Slime repository
   cd /root
   git clone https://github.com/THUDM/slime.git
   cd slime
   pip install -e .
   
-  source scripts/models/glm4-9B.sh
+  echo "================================================"
+  echo "Step 1: Downloading datasets and models (parallel)..."
+  echo "================================================"
   
-  NVLINK_COUNT=$(nvidia-smi | grep -o "NVLink" | wc -l)
-  if [ "$NVLINK_COUNT" -gt 0 ]; then
-      HAS_NVLINK=1
-  else
-      HAS_NVLINK=0
-  fi
-  echo "HAS_NVLINK: $HAS_NVLINK"
+  # Download all three in parallel for faster setup
+  hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k &
+  hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024 &
+  hf download font-info/qwen3-4b-sft-SGLang-RL --local-dir /root/font-info/qwen3-4b-sft &
   
-  CKPT_ARGS=(
-     --hf-checkpoint ${MODEL_NAME}
-     --ref-load /torch_dist_weights
-     --load /checkpoints/slime_ckpts/
-     --save /checkpoints/slime_ckpts/
-     --save-interval 20
-  )
+  # Wait for all downloads to complete
+  wait
+  echo "All downloads completed!"
   
-  ROLLOUT_ARGS=(
-     --prompt-data /datasets/dapo-math-17k.jsonl
-     --input-key prompt
-     --label-key label
-     --apply-chat-template
-     --rollout-shuffle
+  echo "================================================"
+  echo "Step 2: Converting model to Megatron format..."
+  echo "================================================"
   
-     --rm-type deepscaler
+  # Source model configuration
+  source scripts/models/qwen3-4B.sh
   
-     --num-rollout 3000
-     --rollout-batch-size 32
-     --n-samples-per-prompt 8
-     --rollout-max-response-len 8192
-     --rollout-temperature 0.8
+  # Convert HuggingFace checkpoint to Megatron torch_dist format
+  PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+      ${MODEL_ARGS[@]} \
+      --hf-checkpoint /root/font-info/qwen3-4b-sft \
+      --rotary-base 5000000 \
+      --save /root/font-info/qwen3-4b-sft_torch_dist
   
-     --global-batch-size ${GLOBAL_BATCH_SIZE}
-     --balance-data
-  )
+  echo "================================================"
+  echo "Step 3: Starting RL training with ReTool..."
+  echo "================================================"
   
-  EVAL_ARGS=(
-     --eval-interval 20
-     --eval-prompt-data aime /eval_datasets/aime-2024.jsonl
-     --n-samples-per-eval-prompt 16
-     --eval-max-response-len 16384
-     --eval-top-p 0.7
-  )
-  
-  PERF_ARGS=(
-     --tensor-model-parallel-size 2
-     --sequence-parallel
-     --pipeline-model-parallel-size 1
-     --context-parallel-size 2
-     --expert-model-parallel-size 1
-     --expert-tensor-parallel-size 1
-  
-     --recompute-granularity full
-     --recompute-method uniform
-     --recompute-num-layers 1
-  
-     --use-dynamic-batch-size
-     --max-tokens-per-gpu 4608
-  )
-  
-  GRPO_ARGS=(
-     --advantage-estimator grpo
-     --use-kl-loss
-     --kl-loss-coef 0.00
-     --kl-loss-type low_var_kl
-     --entropy-coef 0.00
-     --eps-clip 0.2
-     --eps-clip-high 0.28
-  )
-  
-  OPTIMIZER_ARGS=(
-     --optimizer adam
-     --lr ${LEARNING_RATE}
-     --lr-decay-style constant
-     --weight-decay 0.1
-     --adam-beta1 0.9
-     --adam-beta2 0.98
-  )
-  
-  WANDB_ARGS=()
-  if [ ! -z "${WANDB_API_KEY}" ]; then
-    WANDB_ARGS=(
-       --use-wandb
-       --wandb-project slime-skypilot
-       --wandb-group glm4-9B
-       --wandb-key ${WANDB_API_KEY}
-    )
-  fi
-  
-  SGLANG_ARGS=(
-     --rollout-num-gpus-per-engine 2
-     --use-slime-router
-  )
-  
-  MISC_ARGS=(
-     --attention-dropout 0.0
-     --hidden-dropout 0.0
-     --accumulate-allreduce-grads-in-fp32
-     --attention-softmax-in-fp32
-     --attention-backend flash
-  )
-  
-  export MASTER_ADDR=127.0.0.1
-  export PYTHONBUFFERED=16
-  
-  ray start --head --node-ip-address ${MASTER_ADDR} \
-    --num-gpus 8 --disable-usage-stats \
-    --dashboard-host=0.0.0.0 --dashboard-port=8265
-  
-  RUNTIME_ENV_JSON="{
-    \"env_vars\": {
-      \"PYTHONPATH\": \"/root/Megatron-LM/\",
-      \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-      \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
-    }
-  }"
-  
-  ray job submit --address="http://127.0.0.1:8265" \
-     --runtime-env-json="${RUNTIME_ENV_JSON}" \
-     -- python3 train.py \
-     --actor-num-nodes 1 \
-     --actor-num-gpus-per-node 4 \
-     --rollout-num-gpus 4 \
-     ${MODEL_ARGS[@]} \
-     ${CKPT_ARGS[@]} \
-     ${ROLLOUT_ARGS[@]} \
-     ${OPTIMIZER_ARGS[@]} \
-     ${GRPO_ARGS[@]} \
-     ${DISTRIBUTED_ARGS[@]} \
-     ${WANDB_ARGS[@]} \
-     ${PERF_ARGS[@]} \
-     ${EVAL_ARGS[@]} \
-     ${SGLANG_ARGS[@]} \
-     ${MISC_ARGS[@]}
-  '
+  # Run the ReTool RL training script
+  bash scripts/run-glm4-9B.sh
