@@ -24,11 +24,14 @@ envs:
   WANDB_KEY: null  # Optional: Pass with --env WANDB_KEY=<key>
 
 setup: |
-  # Use official Slime Docker image with all dependencies
-  docker pull slimerl/slime:latest
+  if [ -d /run/systemd/system ]; then sudo systemctl start docker || true; fi
+  sudo nvidia-ctk runtime configure --runtime=docker || true
+  sudo systemctl restart docker || true
+  sudo usermod -aG docker $USER || true
+  sudo docker pull slimerl/slime:latest
 
 run: |
-  docker run --rm --gpus all --ipc=host --shm-size=16g \
+  sudo docker run --rm --gpus all --ipc=host --shm-size=16g \
     --ulimit memlock=-1 --ulimit stack=67108864 \
     -v ~/sky_workdir:/workspace \
     -e WANDB_KEY=${WANDB_KEY} \
@@ -95,7 +98,8 @@ run: |
   
   SCRIPT_DIR="/root/slime/examples/retool"
   
-  # Checkpoint arguments
+  # Model specification and checkpoint arguments for Qwen3-4B
+  source scripts/models/qwen3-4B.sh
   CKPT_ARGS=(
      --hf-checkpoint /root/font-info/qwen3-4b-sft
      --ref-load /root/font-info/qwen3-4b-sft_torch_dist
@@ -204,6 +208,12 @@ run: |
     --num-gpus 4 --disable-usage-stats \
     --dashboard-host=0.0.0.0 --dashboard-port=8265
   
+  # Wait for Ray GCS to be ready before submitting jobs
+  while ray status 2>/dev/null | grep -q "No cluster status."; do
+    echo "Waiting ray cluster to be initialized"
+    sleep 1
+  done
+  
   # Build runtime environment with proper paths
   RUNTIME_ENV_JSON="{
     \"env_vars\": {
@@ -214,9 +224,8 @@ run: |
   }"
   
   # Submit async training job to Ray
-  # Note: Async mode does NOT use --colocate (uses separate rollout GPUs)
-  ray job submit --address="http://127.0.0.1:8265" \
-     --runtime-env-json="${RUNTIME_ENV_JSON}" \
+  ray job submit --address=\"http://127.0.0.1:8265\" \
+     --runtime-env-json=\"${RUNTIME_ENV_JSON}\" \
      -- python3 train_async.py \
      --actor-num-nodes 1 \
      --actor-num-gpus-per-node 4 \

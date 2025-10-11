@@ -4,38 +4,41 @@
 # The model learns to use Python code execution tools to solve math problems.
 #
 # Usage:
-#   sky launch -c slime-retool llm/slime/slime.yaml --env WANDB_KEY=<your-key>
+#   sky launch -c slime llm/slime/slime.yaml --env WANDB_KEY=<your-key>
 
-name: slime-retool
+name: slime
 
 resources:
   accelerators: {A100-80GB:8,  H100:8}
   disk_size: 512
-  use_spot: true
-  ports:
-    - 8265  # Ray dashboard
+  use_spot: false
+  # ports:
+  #   - 8265  # Ray dashboard
 
 envs:
   HF_HUB_ENABLE_HF_TRANSFER: "1"
   WANDB_KEY: null  # Optional: Pass with --env WANDB_KEY=<key>
 
 setup: |
-  # Use official Slime Docker image with all dependencies
-  docker pull slimerl/slime:latest
+  if [ -d /run/systemd/system ]; then sudo systemctl start docker || true; fi
+  sudo nvidia-ctk runtime configure --runtime=docker || true
+  sudo systemctl restart docker || true
+  sudo usermod -aG docker $USER || true
+  sudo docker pull slimerl/slime:latest
 
 run: |
-  docker run --rm --gpus all --ipc=host --shm-size=16g \
+  sudo docker run --rm --gpus all --ipc=host --shm-size=128g \
+    --tmpfs /tmp:exec,size=64g \
     --ulimit memlock=-1 --ulimit stack=67108864 \
     -v ~/sky_workdir:/workspace \
     -e WANDB_KEY=${WANDB_KEY} \
-    -p 8265:8265 \
     slimerl/slime:latest bash -c '
   
   set -ex
   
   # Clone Slime repository
   cd /root
-  git clone https://github.com/THUDM/slime.git
+  git clone https://github.com/dzorlu/slime.git
   cd slime
   pip install -e .
   
@@ -43,23 +46,15 @@ run: |
   echo "Step 1: Downloading datasets and models (parallel)..."
   echo "================================================"
   
-  # Download all three in parallel for faster setup
   hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k &
   hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024 &
   hf download font-info/qwen3-4b-sft-SGLang-RL --local-dir /root/font-info/qwen3-4b-sft &
-  
-  # Wait for all downloads to complete
   wait
-  echo "All downloads completed!"
   
   echo "================================================"
   echo "Step 2: Converting model to Megatron format..."
   echo "================================================"
-  
-  # Source model configuration
   source scripts/models/qwen3-4B.sh
-  
-  # Convert HuggingFace checkpoint to Megatron torch_dist format
   PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
       ${MODEL_ARGS[@]} \
       --hf-checkpoint /root/font-info/qwen3-4b-sft \
@@ -67,8 +62,7 @@ run: |
       --save /root/font-info/qwen3-4b-sft_torch_dist
   
   echo "================================================"
-  echo "Step 3: Starting RL training with ReTool..."
+  echo "Step 3: Starting RL training..."
   echo "================================================"
-  
-  # Run the ReTool RL training script
-  bash scripts/run-glm4-9B.sh
+  bash scripts/run-qwen3-4B.sh
+  '
