@@ -25,6 +25,7 @@ envs:
 
 setup: |
   if [ -d /run/systemd/system ]; then sudo systemctl start docker || true; fi
+  sudo nvidia-smi -pm ENABLED || true
   sudo nvidia-ctk runtime configure --runtime=docker || true
   sudo systemctl restart docker || true
   sudo usermod -aG docker $USER || true
@@ -76,15 +77,7 @@ run: |
   echo "================================================"
   echo "Step 3: Starting Async RL training with ReTool..."
   echo "================================================"
-  
-  # Clean up any previous runs
-  pkill -9 sglang || true
-  sleep 3
-  ray stop --force || true
-  pkill -9 ray || true
-  pkill -9 python || true
-  sleep 3
-  
+    
   export PYTHONBUFFERED=16
   
   # Detect NVLink for optimal communication
