@@ -6,14 +6,17 @@ secrets:
   - gcp-credentials
 
 image:
-  base: "python:3.11-slim"
+  base: "pytorch/pytorch:2.8.0-cuda12.6-cudnn9-devel"
   apt_packages:
     - git
+    - tmux
+    - htop
     - curl
   pip_packages:
-    - torch
     - transformers
     - datasets
     - huggingface-hub
+    - wandb
+    - google-cloud-storage
 
 timeout: 86400
