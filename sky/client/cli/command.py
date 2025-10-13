@@ -1086,6 +1086,8 @@ def launch(
             fg='yellow')
     elif backend_name == backends.CloudVmRayBackend.NAME:
         backend = backends.CloudVmRayBackend()
+    elif backend_name == backends.ModalBackend.NAME:
+        backend = backends.ModalBackend()
     else:
         with ux_utils.print_exception_no_traceback():
             raise ValueError(f'{backend_name} backend is not supported.')

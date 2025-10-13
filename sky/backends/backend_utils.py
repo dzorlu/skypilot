@@ -81,6 +81,7 @@ if typing.TYPE_CHECKING:
     from sky import task as task_lib
     from sky.backends import cloud_vm_ray_backend
     from sky.backends import local_docker_backend
+    from sky.backends import modal_backend
     from sky.utils import volume as volume_lib
 else:
     yaml = adaptors_common.LazyImport('yaml')
@@ -3425,6 +3426,13 @@ def get_backend_from_handle(
     ...
 
 
+@typing.overload
+def get_backend_from_handle(
+    handle: 'modal_backend.ModalResourceHandle'
+) -> 'modal_backend.ModalBackend':
+    ...
+
+
 def get_backend_from_handle(
         handle: backends.ResourceHandle) -> backends.Backend:
     """Gets a Backend object corresponding to a handle.
@@ -3436,6 +3444,8 @@ def get_backend_from_handle(
         backend = backends.CloudVmRayBackend()
     elif isinstance(handle, backends.LocalDockerResourceHandle):
         backend = backends.LocalDockerBackend()
+    elif isinstance(handle, backends.ModalResourceHandle):
+        backend = backends.ModalBackend()
     else:
         raise NotImplementedError(
             f'Handle type {type(handle)} is not supported yet.')

@@ -7,9 +7,12 @@ from sky.backends.cloud_vm_ray_backend import LocalResourcesHandle
 from sky.backends.cloud_vm_ray_backend import SkyletClient
 from sky.backends.local_docker_backend import LocalDockerBackend
 from sky.backends.local_docker_backend import LocalDockerResourceHandle
+from sky.backends.modal_backend import ModalBackend
+from sky.backends.modal_backend import ModalResourceHandle
 
 __all__ = [
     'Backend', 'ResourceHandle', 'CloudVmRayBackend',
     'CloudVmRayResourceHandle', 'SkyletClient', 'LocalResourcesHandle',
-    'LocalDockerBackend', 'LocalDockerResourceHandle'
+    'LocalDockerBackend', 'LocalDockerResourceHandle',
+    'ModalBackend', 'ModalResourceHandle'
 ]

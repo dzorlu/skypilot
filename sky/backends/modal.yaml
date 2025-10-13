@@ -1,0 +1,19 @@
+
+gpu: "A100-80GB:8"
+
+secrets:
+  - wandb-secret
+  - gcp-credentials
+
+image:
+  base: "python:3.11-slim"
+  apt_packages:
+    - git
+    - curl
+  pip_packages:
+    - torch
+    - transformers
+    - datasets
+    - huggingface-hub
+
+timeout: 86400
