@@ -1,0 +1,19 @@
+gpu: "H100:8"
+
+secrets:
+  - GCP_CREDENTIALS          # provides env key: GCP_CREDENTIALS=<service-account-json>
+  - WANDB_API_KEY            # provides env key: WANDB_API_KEY=<wandb key>
+  - hf-token                 # provides env key: HF_TOKEN=<hf token>
+  - HUGGING_FACE_HUB_TOKEN   # provides env key: HUGGING_FACE_HUB_TOKEN=<hf token>
+
+image:
+  base: "slimerl/slime:latest"
+  apt_packages:
+    - git
+    - tmux
+    - htop
+    - curl
+
+timeout: 86400
+
+

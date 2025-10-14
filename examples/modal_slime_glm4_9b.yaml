@@ -1,7 +1,4 @@
-#
-#
 # Usage:
-#
 
 name: slime-glm4-9b-modal
 
@@ -9,21 +6,21 @@ resources:
   accelerators: H100:8
 
 file_mounts:
-  /slime_checkpoints:
+  /workspace/checkpoints:
     name: slime-glm4-checkpoints-modal
+    persistent: true
+  /workspace/debug_rollouts:
+    name: slime-rollouts-modal
     persistent: true
 
 envs:
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
   PYTHONPATH: /root/Megatron-LM/
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
-  HF_MODEL_ID: zai-org/GLM-Z1-9B-0414
-  MODEL_DIR: /root/GLM-Z1-9B-0414
-  WANDB_API_KEY: null
-  HF_TOKEN: null
-  
+
 setup: |
   set -ex
-  
+
   cd /root
   if [ ! -d "slime" ]; then
     git clone https://github.com/THUDM/slime.git
@@ -32,59 +29,37 @@ setup: |
   fi
   cd slime
   pip install -e .
-  
+
   if [ ! -d "/root/Megatron-LM" ]; then
     git clone https://github.com/NVIDIA/Megatron-LM.git /root/Megatron-LM
   fi
-  
-  pip install -U huggingface_hub
-  huggingface-cli download zai-org/GLM-Z1-9B-0414 --local-dir /root/GLM-Z1-9B-0414 || true
-  huggingface-cli download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k || true
-  huggingface-cli download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024 || true
-  
+
 run: |
   set -ex
-  
+
+  # Map Modal secrets to the env names the training uses.
+  export HF_TOKEN="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}"
+  export WANDB_KEY="${WANDB_KEY:-${WANDB_API_KEY:-}}"
+
+  echo "================================================"
+  echo "Step 1: Downloading datasets and model (parallel)..."
+  echo "================================================"
+  hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k &
+  hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024 &
+  hf download THUDM/glm-4-9b-chat --local-dir /root/GLM-Z1-9B-0414 &
+  wait
+
+  echo "================================================"
+  echo "Step 2: Converting model to Megatron format..."
+  echo "================================================"
   cd /root/slime
   source scripts/models/glm4-9B.sh
-  
-  python train.py \
-    --actor-num-nodes 1 \
-    --actor-num-gpus-per-node 4 \
-    --rollout-num-gpus 4 \
-    --hf-checkpoint /root/GLM-Z1-9B-0414/ \
-    --ref-load /slime_checkpoints/GLM-Z1-9B-0414_torch_dist \
-    --load /slime_checkpoints/GLM-Z1-9B-0414_slime/ \
-    --save /slime_checkpoints/GLM-Z1-9B-0414_slime/ \
-    --save-interval 20 \
-    --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl \
-    --input-key prompt \
-    --label-key label \
-    --apply-chat-template \
-    --rollout-shuffle \
-    --rm-type deepscaler \
-    --num-rollout 3000 \
-    --rollout-batch-size 32 \
-    --n-samples-per-prompt 8 \
-    --rollout-max-response-len 8192 \
-    --rollout-temperature 0.8 \
-    --global-batch-size 256 \
-    --balance-data \
-    --eval-interval 20 \
-    --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl \
-    --n-samples-per-eval-prompt 16 \
-    --eval-max-response-len 16384 \
-    --eval-top-p 0.7 \
-    --tensor-model-parallel-size 2 \
-    --sequence-parallel \
-    --pipeline-model-parallel-size 1 \
-    --context-parallel-size 2 \
-    --expert-model-parallel-size 1 \
-    --expert-tensor-parallel-size 1 \
-    --recompute-granularity full \
-    --recompute-method uniform \
-    --recompute-num-layers 1 \
-    --use-dynamic-batch-size \
-    --max-tokens-per-gpu 4608 \
-    --rollout-num-gpus-per-engine 2 \
-    ${MODEL_ARGS[@]}
+  PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+      ${MODEL_ARGS[@]} \
+      --hf-checkpoint /root/GLM-Z1-9B-0414 \
+      --save /root/GLM-Z1-9B-0414_torch_dist
+
+  echo "================================================"
+  echo "Step 3: Starting RL training..."
+  echo "================================================"
+  bash scripts/run-glm4-9B.sh

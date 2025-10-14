@@ -28,6 +28,7 @@ from sky.clouds.oci import OCI
 from sky.clouds.paperspace import Paperspace
 from sky.clouds.primeintellect import PrimeIntellect
 from sky.clouds.runpod import RunPod
+from sky.clouds.modal import Modal
 from sky.clouds.scp import SCP
 from sky.clouds.seeweb import Seeweb
 from sky.clouds.ssh import SSH
@@ -47,6 +48,7 @@ __all__ = [
     'Paperspace',
     'PrimeIntellect',
     'SCP',
+    'Modal',
     'RunPod',
     'Vast',
     'OCI',
