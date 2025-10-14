@@ -195,6 +195,206 @@ Ensure volume names don't contain invalid characters. Use lowercase letters, num
 
 See `examples/modal_slime_task.yaml` for a complete example of running the Slime RL training workflow on Modal.
 
+## Launching Slime Training on Modal
+
+This section provides step-by-step instructions for running Slime RL training on Modal's serverless infrastructure.
+
+### Prerequisites
+
+1. **Modal account and CLI setup:**
+   ```bash
+   pip install modal
+   modal setup
+   ```
+
+2. **SkyPilot with Modal backend:**
+   ```bash
+   pip install "skypilot[aws]"  # or your preferred cloud
+   ```
+
+3. **Configure Modal secrets:**
+   ```bash
+   # WandB API key for experiment tracking
+   modal secret create wandb-secret WANDB_API_KEY=your_wandb_key_here
+   
+   # Hugging Face token for model downloads
+   modal secret create hf-token HF_TOKEN=your_hf_token_here
+   
+   # (Optional) GCP credentials for cloud storage
+   modal secret create gcp-credentials GCP_CREDENTIALS="$(cat path/to/credentials.json)"
+   ```
+
+4. **Update Modal backend configuration** (`~/.sky/modal.yaml`):
+   ```yaml
+   gpu: "H100:8"
+   secrets:
+     - wandb-secret
+     - hf-token
+     - gcp-credentials  # if using GCS
+   
+   image:
+     base: "pytorch/pytorch:2.8.0-cuda12.6-cudnn9-devel"
+     apt_packages:
+       - git
+       - tmux
+       - htop
+       - curl
+     pip_packages:
+       - transformers
+       - datasets
+       - huggingface-hub
+       - wandb
+       - google-cloud-storage
+   
+   timeout: 86400
+   ```
+
+### Quick Start: GLM-4 9B Training
+
+**Step 1: Launch training job**
+```bash
+sky launch --backend modal -c slime-glm4-9b examples/modal_slime_glm4_9b.yaml
+```
+
+This command will:
+- Create a Modal app with H100:8 GPUs
+- Build a Docker image with all dependencies
+- Download the GLM-4 9B model from Hugging Face
+- Download the training datasets
+- Start the RL training job
+- Save checkpoints to Modal Volume
+
+**Step 2: Monitor training progress**
+
+Since Modal functions are ephemeral and don't provide SSH access, you can monitor progress by:
+
+1. **Check Modal dashboard:** Visit https://modal.com/apps to see your running function
+2. **View logs in real-time:** Modal CLI automatically streams logs during execution
+3. **Check WandB:** If configured, training metrics will be logged to Weights & Biases
+
+**Step 3: Access checkpoints**
+
+Checkpoints are saved to a Modal Volume named `slime-glm4-checkpoints-modal`. To access them:
+
+```bash
+# List volumes
+modal volume ls
+
+# Download checkpoint data
+modal volume get slime-glm4-checkpoints-modal /local/path/to/save
+```
+
+### Customizing the Configuration
+
+You can customize the training by modifying environment variables or the YAML file:
+
+**Option 1: Environment variables (for quick experiments)**
+```bash
+export HF_MODEL_ID=your-org/your-model-id
+export MODEL_DIR=/root/your-model-name
+export WANDB_PROJECT=my-experiment
+
+sky launch --backend modal -c my-experiment examples/modal_slime_glm4_9b.yaml
+```
+
+**Option 2: Custom YAML (for reproducible experiments)**
+```bash
+# Copy and modify the example
+cp examples/modal_slime_glm4_9b.yaml my_custom_training.yaml
+
+# Edit my_custom_training.yaml with your preferences:
+# - Change HF_MODEL_ID to your model
+# - Adjust training hyperparameters in the run section
+# - Modify GPU count if needed
+
+sky launch --backend modal -c my-experiment my_custom_training.yaml
+```
+
+### Model Selection Examples
+
+**GLM-4 9B (supported):**
+```yaml
+envs:
+  HF_MODEL_ID: zai-org/GLM-Z1-9B-0414
+  MODEL_DIR: /root/GLM-Z1-9B-0414
+
+resources:
+  accelerators: H100:8  # Single-node, 8 GPUs
+```
+
+**Other models:**
+- Qwen3-4B: `HF_MODEL_ID: font-info/qwen3-4b-sft-SGLang-RL`
+- Custom models: Set `HF_MODEL_ID` to your Hugging Face model ID
+
+### Important Limitations
+
+⚠️ **Multi-node training not supported:**
+- Modal supports up to 8 GPUs per container
+- The GLM-4.5 355B example (8 nodes × 64 GPUs) **cannot** run on Modal
+- For multi-node training, use traditional SkyPilot backends (AWS, GCP, Azure)
+
+⚠️ **Large model downloads:**
+- Model downloads happen during image build or at runtime
+- Large models (>10GB) may take significant time
+- Consider pre-downloading models to a Modal Volume for faster startup
+
+⚠️ **Storage:**
+- File mounts are translated to Modal Volumes (not direct S3/GCS mounting)
+- Data must be copied to/from volumes
+- Volumes persist across runs when `persistent: true`
+
+### Troubleshooting
+
+**Issue: "Secret not found"**
+```bash
+# List configured secrets
+modal secret list
+
+# Create missing secret
+modal secret create secret-name KEY=value
+```
+
+**Issue: "GPU not available"**
+```bash
+# Check available GPU types
+modal gpu list
+
+# Update ~/.sky/modal.yaml with available GPU type
+```
+
+**Issue: "Model download fails"**
+- Verify HF_TOKEN is set correctly in Modal secrets
+- Check model ID exists on Hugging Face: https://huggingface.co/{model-id}
+- Try downloading manually first: `huggingface-cli download {model-id}`
+
+**Issue: "Timeout during image build"**
+- Large model downloads may timeout during image build
+- Consider downloading models at runtime instead
+- Or pre-download to Modal Volume and mount it
+
+### Cost Optimization
+
+1. **Use appropriate GPU types:**
+   - Development/testing: T4, L4 (cheaper)
+   - Production training: H100, A100 (faster)
+
+2. **Set timeout limits:**
+   ```yaml
+   # In your task YAML
+   timeout: 3600  # 1 hour (adjust based on training time)
+   ```
+
+3. **Monitor usage:**
+   - Check Modal dashboard for compute time
+   - Review WandB for training efficiency
+   - Stop jobs early if not converging
+
+### Next Steps
+
+- Review `examples/modal_slime_glm4_9b.yaml` for full example
+- Check `sky/backends/modal.yaml` for backend configuration
+- Read Modal documentation: https://modal.com/docs
+
 ## Support
 
 For Modal-specific issues, see https://modal.com/docs
