@@ -28,8 +28,6 @@ setup: |
   sudo docker pull slimerl/slime:latest
 
 run: |
-  # Create directories for persistent storage
-  mkdir -p /workspace/checkpoints /workspace/debug_rollouts
   sudo docker run --rm --gpus all --ipc=host --shm-size=128g \
     --tmpfs /tmp:exec,size=64g \
     --ulimit memlock=-1 --ulimit stack=67108864 \
@@ -70,11 +68,11 @@ run: |
   ' > train.log & 
 
 file_mounts:
-  /workspace/checkpoints:
+  checkpoints:
     name: slime-checkpoints
     store: gcs
     persistent: true
-  /workspace/debug_rollouts:
+  debug_rollouts:
     name: slime-rollouts
     store: gcs
     persistent: true 
