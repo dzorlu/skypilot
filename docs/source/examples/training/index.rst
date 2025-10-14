@@ -15,6 +15,7 @@ Training
    NeMo <nemo.md>
    NeMo RL <nemorl.md>
    Ray <ray.md>
+   Slime (RLHF) <slime.md>
    TorchTitan <torchtitan.md>
    Training on TPUs <tpu.md>
    Unsloth <unsloth.md>

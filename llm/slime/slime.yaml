@@ -1,0 +1,78 @@
+# Slime ReTool: RL Training for Tool-Using LLMs
+#
+# This example trains Qwen3-4B with the ReTool framework for tool-augmented generation.
+# The model learns to use Python code execution tools to solve math problems.
+#
+# Usage:
+#   sky launch -c slime llm/slime/slime.yaml --env WANDB_KEY=<your-key>
+
+name: slime
+
+resources:
+  accelerators: {A100-80GB:8,  H100:8}
+  disk_size: 512
+  use_spot: false
+  # ports:
+  #   - 8265  # Ray dashboard
+
+envs:
+  HF_HUB_ENABLE_HF_TRANSFER: "1"
+  WANDB_KEY: null  # Optional: Pass with --env WANDB_KEY=<key>
+
+setup: |
+  if [ -d /run/systemd/system ]; then sudo systemctl start docker || true; fi
+  sudo nvidia-smi -pm ENABLED || true
+  sudo nvidia-ctk runtime configure --runtime=docker || true
+  sudo systemctl restart docker || true
+  sudo usermod -aG docker $USER || true
+  sudo docker pull slimerl/slime:latest
+
+run: |
+  sudo docker run --rm --gpus all --ipc=host --shm-size=128g \
+    --tmpfs /tmp:exec,size=64g \
+    --ulimit memlock=-1 --ulimit stack=67108864 \
+    -v ~/sky_workdir:/workspace \
+    -e WANDB_KEY=${WANDB_KEY} \
+    slimerl/slime:latest bash -c '
+  
+  set -ex
+  
+  # Clone Slime repository
+  cd /root
+  git clone https://github.com/dzorlu/slime.git
+  cd slime
+  pip install -e .
+  
+  echo "================================================"
+  echo "Step 1: Downloading datasets and models (parallel)..."
+  echo "================================================"
+  
+  hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k &
+  hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024 &
+  hf download THUDM/glm-4-9b-chat --local-dir /root/GLM-Z1-9B-0414 &
+  wait
+  
+  echo "================================================"
+  echo "Step 2: Converting model to Megatron format..."
+  echo "================================================"
+  source scripts/models/glm4-9B.sh
+  PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
+      ${MODEL_ARGS[@]} \
+      --hf-checkpoint /root/GLM-Z1-9B-0414 \
+      --save /root/GLM-Z1-9B-0414_torch_dist
+  
+  echo "================================================"
+  echo "Step 3: Starting RL training..."
+  echo "================================================"
+  bash scripts/run-glm4-9B.sh
+  ' > train.log & 
+
+file_mounts:
+  checkpoints:
+    name: slime-checkpoints
+    store: gcs
+    persistent: true
+  debug_rollouts:
+    name: slime-rollouts
+    store: gcs
+    persistent: true 

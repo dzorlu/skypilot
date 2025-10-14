@@ -155,6 +155,7 @@ SkyPilot cuts your cloud costs & maximizes GPU availability:
 - [Unsloth]({{BASE_URL}}/examples/training/unsloth.html.md): Fast fine-tuning with Unsloth
 - [DeepSpeed]({{BASE_URL}}/examples/training/deepspeed.html.md): Distributed training with DeepSpeed
 - [VeRL]({{BASE_URL}}/examples/training/verl.html.md): RL training for LLMs with VeRL
+- [Slime]({{BASE_URL}}/examples/training/slime.html.md): Distributed RL training framework with Megatron + SGLang
 
 ## Training Frameworks
 
