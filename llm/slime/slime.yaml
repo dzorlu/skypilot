@@ -28,7 +28,7 @@ setup: |
   sudo docker pull slimerl/slime:latest
 
 run: |
-  sudo docker run --rm --gpus all --ipc=host --shm-size=128g \
+  sudo docker run --rm --gpus all --privileged --ipc=host --shm-size=128g \
     --tmpfs /tmp:exec,size=64g \
     --ulimit memlock=-1 --ulimit stack=67108864 \
     -v ~/sky_workdir:/workspace \
@@ -49,7 +49,7 @@ run: |
   
   hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k &
   hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024 &
-  hf download THUDM/glm-4-9b-chat --local-dir /root/GLM-Z1-9B-0414 &
+  hf download zai-org/GLM-Z1-9B-0414 --local-dir /root/GLM-Z1-9B-0414 &
   wait
   
   echo "================================================"

@@ -1,0 +1,166 @@
+# skypilot/llm/tbench-skypilot.yaml
+
+# SkyPilot configuration for running SkyRL training on the Terminal-Bench dataset.
+# Launch with: sky launch -c skyrl-tbench llm/swe-training/train.yaml --secret WANDB_API_KEY="<your-key>"
+
+resources:
+  accelerators: {A100-80GB:4, H100:4}
+  # NOTE: Switched from a container image to a VM image so Docker is available on the node.
+  # The sandboxes DockerEnvironment invokes `docker compose` at runtime; inside a container
+  # there is no Docker daemon, which caused FileNotFoundError. Use a VM image instead.
+  memory: 64+
+  ports: 6479          # Expose port for Ray dashboard
+
+num_nodes: 1           # Cluster size
+
+# Set the primary workdir to your SkyRL repository fork.
+workdir:
+  url: https://github.com/dzorlu/SkyRL.git
+  ref: feat/rl_on_sandboxes
+
+# Set secrets for logging.
+secrets:
+  WANDB_API_KEY: f66373399824f8c1942490b0862a664b8afc8802
+
+envs:
+  LOGGER: "wandb"  # Change to "console" to print to stdout
+
+# Commands to set up the environment on each node.
+setup: |
+  set -ex
+
+  # Install git and required runtime libraries (libnuma for NUMA affinity)
+  apt-get update && apt-get install -y git libnuma1 numactl ca-certificates curl gnupg lsb-release
+
+  # Install Docker Engine (from Ubuntu repos)
+  apt-get update && apt-get install -y docker.io
+  systemctl enable --now docker || true
+
+  # Install Docker Compose v2 as CLI plugin (works on Ubuntu 20.04/22.04)
+  COMPOSE_VERSION=v2.27.0
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -SL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+  # Clone your forks of the other required repositories.
+  git clone --branch feat/tbench-task-converter https://github.com/dzorlu/sandboxes.git ~/sandboxes
+  git clone https://github.com/laude-institute/terminal-bench.git ~/terminal-bench
+
+  # Navigate into the skyrl-train directory within the workdir.
+  cd skyrl-train
+  uv venv --python 3.12 --seed
+  source .venv/bin/activate
+
+  # Install dependencies from pyproject.toml (no heavy extras here)
+  uv sync
+
+  # Install vLLM without FlashInfer (avoid GLIBC_2.32 runtime deps)
+  uv pip install "vllm==0.10.1.1" "torch==2.7.1" "torchvision"
+
+  # Install the local sandboxes package in editable mode
+  uv pip install -e ~/sandboxes
+
+  # Create the dummy dataset required by the trainer
+  uv run -- python examples/gsm8k/gsm8k_dataset.py --output_dir $HOME/data/gsm8k
+
+  # Convert the terminal-bench tasks to the sandboxes format
+  cd ~/sandboxes
+  uv run python scripts/convert_tbench_tasks.py \
+    --input-dir ~/terminal-bench/tasks \
+    --output-dir $HOME/converted_tasks
+
+# Commands to run the actual training job.
+run: |
+  set -euo pipefail
+
+  # Navigate into the skyrl-train directory within the workdir.
+  cd skyrl-train
+  source .venv/bin/activate
+
+  # Set up environment variables for the training script
+  read -r head_ip _ <<< "$SKYPILOT_NODE_IPS"
+  DATA_DIR="$HOME/data/gsm8k"
+  TBENCH_CONFIG_DIR="examples/terminal_bench"
+  SANDBOXES_DIR="$HOME/sandboxes"
+  CONVERTED_TASKS_DIR="$HOME/converted_tasks"
+
+  # Login to Weights & Biases
+  uv run -- python3 -c "import wandb; wandb.login(relogin=True, key='$WANDB_API_KEY')"
+
+  # Helper to wait for Ray cluster to be ready
+  wait_for_ray() {
+    local address=$1; for _ in $(seq 1 24); do if ray status --address "$address" >/dev/null 2>&1; then return 0; fi; sleep 5; done;
+    echo "Ray cluster at $address failed to become ready" >&2; return 1;
+  }
+
+  export RAY_RUNTIME_ENV_HOOK=ray._private.runtime_env.uv_runtime_env_hook.hook
+
+  # Head node (rank 0) starts the Ray cluster and the training job
+  if [ "$SKYPILOT_NODE_RANK" = "0" ]; then
+    ray start --head --disable-usage-stats --port 6479
+    wait_for_ray 127.0.0.1:6479
+
+    # Disable FlashInfer to avoid GLIBC_2.32 requirement on older distros
+    export VLLM_DISABLE_FLASHINFER=1
+
+    # Launch the SkyRL training job with all parameters from run_tbench.sh
+    uv run --extra sandboxes -m examples.terminal_bench.entrypoints.main_tbench \
+      data.train_data="['$DATA_DIR/train.parquet']" \
+      data.val_data="['$DATA_DIR/validation.parquet']" \
+      hydra.searchpath=[file://$TBENCH_CONFIG_DIR] \
+      +terminal_bench_config=terminal_bench \
+      +terminal_bench_config.tasks_dataset_path=$CONVERTED_TASKS_DIR \
+      +terminal_bench_config.sandboxes_dir=$SANDBOXES_DIR \
+      +terminal_bench_config.max_episodes=16 \
+      +terminal_bench_config.trials_dir="$HOME/trials" \
+      +terminal_bench_config.agent_name="terminus-2" \
+      +terminal_bench_config.environment_type="docker" \
+      trainer.algorithm.advantage_estimator="grpo" \
+      trainer.policy.model.path="Qwen/Qwen2.5-Coder-3B" \
+      trainer.placement.colocate_all=true \
+      trainer.strategy=fsdp2 \
+      trainer.placement.policy_num_gpus_per_node="$SKYPILOT_NUM_GPUS_PER_NODE" \
+      trainer.placement.ref_num_gpus_per_node="$SKYPILOT_NUM_GPUS_PER_NODE" \
+      generator.num_inference_engines="$SKYPILOT_NUM_GPUS_PER_NODE" \
+      generator.inference_engine_tensor_parallel_size=1 \
+      trainer.flash_attn=false \
+      trainer.epochs=20 \
+      trainer.eval_batch_size=1024 \
+      trainer.eval_before_train=false \
+      trainer.eval_interval=-1 \
+      trainer.update_epochs_per_batch=1 \
+      trainer.train_batch_size=8 \
+      trainer.policy_mini_batch_size=2 \
+      trainer.micro_forward_batch_size_per_gpu=1 \
+      trainer.micro_train_batch_size_per_gpu=1 \
+      trainer.ckpt_interval=-1 \
+      trainer.max_prompt_length=4096 \
+      generator.enable_http_endpoint=true \
+      generator.http_endpoint_host="127.0.0.1" \
+      generator.http_endpoint_port=8000 \
+      generator.sampling_params.max_generate_length=26000 \
+      trainer.policy.optimizer_config.lr=1.0e-6 \
+      trainer.algorithm.use_kl_loss=true \
+      generator.backend=vllm \
+      generator.run_engines_locally=true \
+      generator.weight_sync_backend=nccl \
+      generator.async_engine=true \
+      generator.batched=true \
+      environment.env_class=gsm8k \
+      generator.n_samples_per_prompt=4 \
+      generator.gpu_memory_utilization=0.8 \
+      trainer.logger="$LOGGER" \
+      trainer.project_name="terminal_bench" \
+      trainer.run_name="terminal_bench_test" \
+      trainer.resume_mode=null \
+      trainer.ckpt_path="$HOME/ckpts/gsm8k_0.5B_ckpt" \
+      $@
+
+  # Worker nodes connect to the head node
+  else
+    ray start --address "$head_ip:6479" --disable-usage-stats
+    wait_for_ray "$head_ip:6479"
+  fi
+
+  echo "Node setup and Ray start script finished for rank ${SKYPILOT_NODE_RANK}."
