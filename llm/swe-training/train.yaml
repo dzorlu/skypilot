@@ -5,9 +5,7 @@
 
 resources:
   accelerators: {A100-80GB:4, H100:4}
-  # NOTE: Switched from a container image to a VM image so Docker is available on the node.
-  # The sandboxes DockerEnvironment invokes `docker compose` at runtime; inside a container
-  # there is no Docker daemon, which caused FileNotFoundError. Use a VM image instead.
+  image_id: docker:nvidia/cuda:12.1.1-devel-ubuntu22.04
   memory: 64+
   ports: 6479          # Expose port for Ray dashboard
 
@@ -32,17 +30,6 @@ setup: |
   # Install git and required runtime libraries (libnuma for NUMA affinity)
   apt-get update && apt-get install -y git libnuma1 numactl ca-certificates curl gnupg lsb-release
 
-  # Install Docker Engine (from Ubuntu repos)
-  apt-get update && apt-get install -y docker.io
-  systemctl enable --now docker || true
-
-  # Install Docker Compose v2 as CLI plugin (works on Ubuntu 20.04/22.04)
-  COMPOSE_VERSION=v2.27.0
-  mkdir -p /usr/local/lib/docker/cli-plugins
-  curl -SL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
-    -o /usr/local/lib/docker/cli-plugins/docker-compose
-  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-
   # Clone your forks of the other required repositories.
   git clone --branch feat/tbench-task-converter https://github.com/dzorlu/sandboxes.git ~/sandboxes
   git clone https://github.com/laude-institute/terminal-bench.git ~/terminal-bench
@@ -52,11 +39,9 @@ setup: |
   uv venv --python 3.12 --seed
   source .venv/bin/activate
 
-  # Install dependencies from pyproject.toml (no heavy extras here)
-  uv sync
-
-  # Install vLLM without FlashInfer (avoid GLIBC_2.32 runtime deps)
-  uv pip install "vllm==0.10.1.1" "torch==2.7.1" "torchvision"
+  # Install dependencies (with vLLM + FlashInfer via extra); ignore lockfile to avoid stale conflicts
+  rm -f uv.lock
+  UV_NO_LOCK=1 uv sync --extra vllm
 
   # Install the local sandboxes package in editable mode
   uv pip install -e ~/sandboxes
@@ -101,11 +86,8 @@ run: |
     ray start --head --disable-usage-stats --port 6479
     wait_for_ray 127.0.0.1:6479
 
-    # Disable FlashInfer to avoid GLIBC_2.32 requirement on older distros
-    export VLLM_DISABLE_FLASHINFER=1
-
     # Launch the SkyRL training job with all parameters from run_tbench.sh
-    uv run --extra sandboxes -m examples.terminal_bench.entrypoints.main_tbench \
+    uv run --extra vllm --extra sandboxes -m examples.terminal_bench.entrypoints.main_tbench \
       data.train_data="['$DATA_DIR/train.parquet']" \
       data.val_data="['$DATA_DIR/validation.parquet']" \
       hydra.searchpath=[file://$TBENCH_CONFIG_DIR] \
@@ -115,7 +97,7 @@ run: |
       +terminal_bench_config.max_episodes=16 \
       +terminal_bench_config.trials_dir="$HOME/trials" \
       +terminal_bench_config.agent_name="terminus-2" \
-      +terminal_bench_config.environment_type="docker" \
+      +terminal_bench_config.environment_type="modal" \
       trainer.algorithm.advantage_estimator="grpo" \
       trainer.policy.model.path="Qwen/Qwen2.5-Coder-3B" \
       trainer.placement.colocate_all=true \
@@ -124,7 +106,7 @@ run: |
       trainer.placement.ref_num_gpus_per_node="$SKYPILOT_NUM_GPUS_PER_NODE" \
       generator.num_inference_engines="$SKYPILOT_NUM_GPUS_PER_NODE" \
       generator.inference_engine_tensor_parallel_size=1 \
-      trainer.flash_attn=false \
+      trainer.flash_attn=true \
       trainer.epochs=20 \
       trainer.eval_batch_size=1024 \
       trainer.eval_before_train=false \
